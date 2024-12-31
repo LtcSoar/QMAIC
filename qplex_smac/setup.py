@@ -34,8 +34,8 @@ setup(
         's2clientprotocol>=4.10.1.75800.0',
         'absl-py>=0.1.0',
         'numpy>=1.10',
-        "gym==0.16.0", 
-        "pyglet>=1.5.11"
+        # "gym==0.16.0", 
+        # "pyglet>=1.5.11"
     ],
     package_data={'smac.env.lbforaging.foraging': ['icons/*.png']}
 )

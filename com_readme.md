@@ -1,0 +1,2 @@
+- use export SC2PATH='/home/ltc/MARL/CEMA/pymarl/3rdparty/StarCraftII' the same smac env, no need to worry; still have a copy in 3rdparty
+-   "gym==0.16.0", "pyglet>=1.5.11" these two requirements are conflict with each other and i comment them out

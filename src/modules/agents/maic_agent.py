@@ -17,6 +17,7 @@ class MAICAgent(nn.Module):
         NN_HIDDEN_SIZE = args.nn_hidden_size
         activation_func = nn.LeakyReLU()
 
+        # 这完全就是encoder的部分
         self.embed_net = nn.Sequential(
             nn.Linear(args.rnn_hidden_dim, NN_HIDDEN_SIZE),
             nn.BatchNorm1d(NN_HIDDEN_SIZE),
@@ -24,6 +25,7 @@ class MAICAgent(nn.Module):
             nn.Linear(NN_HIDDEN_SIZE, args.n_agents * args.latent_dim * 2)
         )
 
+        # inference net就是为了拟合构建出来的q的分布，方便两者取差的
         self.inference_net = nn.Sequential(
             nn.Linear(args.rnn_hidden_dim + args.n_actions, NN_HIDDEN_SIZE),
             nn.BatchNorm1d(NN_HIDDEN_SIZE),
@@ -40,35 +42,45 @@ class MAICAgent(nn.Module):
             activation_func,
             nn.Linear(NN_HIDDEN_SIZE, args.n_actions)
         )
-
+        # rnn_hidden_dim是64,attention_dim是32
         self.w_query = nn.Linear(args.rnn_hidden_dim, args.attention_dim)
         self.w_key = nn.Linear(args.latent_dim, args.attention_dim)
         
     def init_hidden(self):
-        return self.fc1.weight.new(1, self.args.rnn_hidden_dim).zero_()
+        return self.fc1.weight.new(1, self.args.rnn_hidden_dim).zero_()#new用于创建与现有张量具有相同数据类型和设备的新张量
     
     def forward(self, inputs, hidden_state, bs, test_mode=False, **kwargs):
+        # inputs shape: (bs*self.n_agents, input_shape)
         x = F.relu(self.fc1(inputs))
+        # hidden_state 原shape: (bs, self.n_agents, self.args.rnn_hidden_dim)，这句是将bs与n_agetns合并
         h_in = hidden_state.reshape(-1, self.args.rnn_hidden_dim)
         h = self.rnn(x, h_in)
+        # 经过一层mlp得到Q
         q = self.fc2(h)
 
         latent_parameters = self.embed_net(h)
+        # 这里是在创造方差,并且限制最小值
         latent_parameters[:, -self.n_agents * self.latent_dim:] = th.clamp(
             th.exp(latent_parameters[:, -self.n_agents * self.latent_dim:]),
             min=self.args.var_floor)
-
+        
+        
+        # 我理解这个shape本来就是(bs * self.n_agents, self.n_agents * self.latent_dim * 2) 因为前面已经转了
         latent_embed = latent_parameters.reshape(bs * self.n_agents, self.n_agents * self.latent_dim * 2)
 
         if test_mode:
             latent = latent_embed[:, :self.n_agents * self.latent_dim]
         else:
+            # 创建一个高斯分布对象,分别以前面部分为均值,后面部分为方差
             gaussian_embed = D.Normal(latent_embed[:, :self.n_agents * self.latent_dim],
                                     (latent_embed[:, self.n_agents * self.latent_dim:]) ** (1 / 2))
             latent = gaussian_embed.rsample() # shape: (bs * self.n_agents, self.n_agents * self.latent_dim)
+        # 之前是bs * self.n_agents ,self.n_agents * self.latent_dim;相当于输入的是hidden_state,输出是mu sigma;并且采样
         latent = latent.reshape(bs * self.n_agents * self.n_agents, self.latent_dim)
 
         h_repeat = h.view(bs, self.n_agents, -1).repeat(1, self.n_agents, 1).view(bs * self.n_agents * self.n_agents, -1)
+        # msg net的输入是h和latent拼接,所谓拼接是说得到bs*n_a*n_a,latent_dim+hidden_dim的矩阵;相当于得到对各个智能体要说什么话
+        # 并最终与n_actions对齐
         msg = self.msg_net(th.cat([h_repeat, latent], dim=-1)).view(bs, self.n_agents, self.n_agents, self.n_actions)
         
         query = self.w_query(h).unsqueeze(1)
@@ -78,15 +90,18 @@ class MAICAgent(nn.Module):
             alpha[:, i, i] = -1e9
         alpha = F.softmax(alpha, dim=-1).reshape(bs, self.n_agents, self.n_agents, 1)
 
+        # 这部分居然是test mode才做,train mode不对齐吗
         if test_mode:
             alpha[alpha < (0.25 * 1 / self.n_agents)] = 0
 
         gated_msg = alpha * msg
 
+        # 采用直接叠加的方法施加影响
         return_q = q + th.sum(gated_msg, dim=1).view(bs * self.n_agents, self.n_actions)
 
         returns = {}
         if 'train_mode' in kwargs and kwargs['train_mode']:
+            # 这里在计算表征和动作的关联的时候，动作的得出已经依赖于msg，而msg又依赖于对手建模的好坏
             if hasattr(self.args, 'mi_loss_weight') and self.args.mi_loss_weight > 0:
                 returns['mi_loss'] = self.calculate_action_mi_loss(h, bs, latent_embed, return_q)
             if hasattr(self.args, 'entropy_loss_weight') and self.args.entropy_loss_weight > 0:
@@ -107,6 +122,8 @@ class MAICAgent(nn.Module):
         one_hot_a = one_hot_a.view(bs, 1, self.n_agents, -1).repeat(1, self.n_agents, 1, 1)
         one_hot_a = one_hot_a.view(bs * self.n_agents * self.n_agents, -1)
 
+        # 这里本质做法就是加入了a的信息后重新做了一个对z的分布的拟合，但问题在于这里没有ground truth
+        # 思前想后还是不太明白，奥本来就是一个用inference net来逼近的结果，只需要认识到互信息确实比KL散度大就可以
         latent_infer = self.inference_net(th.cat([hi, one_hot_a], dim=-1)).view(bs * self.n_agents * self.n_agents, -1)
         latent_infer[:, self.latent_dim:] = th.clamp(th.exp(latent_infer[:, self.latent_dim:]), min=self.args.var_floor)
         g2 = D.Normal(latent_infer[:, :self.latent_dim], latent_infer[:, self.latent_dim:] ** (1/2))

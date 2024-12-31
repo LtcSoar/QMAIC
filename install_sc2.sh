@@ -1,15 +1,15 @@
 #!/bin/bash
 # Install SC2 and add the custom maps
 
-if [ -z "$EXP_DIR" ]
-then
-    EXP_DIR=~
-fi
+# if [ -z "$EXP_DIR" ]
+# then
+#     EXP_DIR=~
+# fi
 
-echo "EXP_DIR: $EXP_DIR"
-cd $EXP_DIR/pymarl
+# echo "EXP_DIR: $EXP_DIR"
+# cd $EXP_DIR/pymarl
 
-mkdir 3rdparty
+# mkdir 3rdparty
 cd 3rdparty
 
 export SC2PATH=`pwd`'/StarCraftII'

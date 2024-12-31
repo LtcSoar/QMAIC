@@ -26,6 +26,7 @@ class MAICMAC:
     def forward(self, ep_batch, t, test_mode=False, **kwargs):
         agent_inputs = self._build_inputs(ep_batch, t)
         avail_actions = ep_batch["avail_actions"][:, t]
+        # 与普通controller的差别正在于此
         agent_outs, self.hidden_states, losses = self.agent.forward(agent_inputs, self.hidden_states, ep_batch.batch_size, 
             test_mode=test_mode, **kwargs)
 
@@ -88,7 +89,7 @@ class MAICMAC:
                 inputs.append(batch["actions_onehot"][:, t-1])
         if self.args.obs_agent_id:
             inputs.append(th.eye(self.n_agents, device=batch.device).unsqueeze(0).expand(bs, -1, -1))
-
+        # 这里将inputs前面的bs和n_agents合并
         inputs = th.cat([x.reshape(bs*self.n_agents, -1) for x in inputs], dim=1)
         return inputs
 
